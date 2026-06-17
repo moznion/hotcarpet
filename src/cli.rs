@@ -30,6 +30,14 @@ pub struct Cli {
     #[arg(long, value_name = "DATE")]
     pub until: Option<String>,
 
+    /// Walk history back no further than this commit. The traversal stops once
+    /// it reaches this commit (inclusive). This takes precedence over `--since`
+    /// / `--until`: those still filter the commits that are walked, but the walk
+    /// always stops here regardless. Accepts anything `git rev-parse` resolves
+    /// (full or abbreviated hash, ref, etc.).
+    #[arg(long, value_name = "COMMIT")]
+    pub since_commit: Option<String>,
+
     /// Globs of files to include. Omit to include every file.
     /// Example: hotcarpet 'src/**/*.ts'
     #[arg(value_name = "GLOB")]

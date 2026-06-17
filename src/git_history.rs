@@ -10,13 +10,29 @@ use git2::{Commit, Diff, DiffOptions, Oid, Repository, Sort, Tree};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Every commit id reachable from `HEAD`, newest first.
-pub fn commit_oids(repo: &Repository) -> Result<Vec<Oid>> {
+/// Commit ids reachable from `HEAD`, newest first. When `stop_at` is given, the
+/// walk is bounded below by that commit: it (and every commit between it and
+/// `HEAD`) is included, while its ancestors are excluded. The bound is applied
+/// topologically — by hiding `stop_at`'s parents — so it is correct regardless
+/// of commit timestamps (unlike stopping when the commit happens to be visited
+/// in time order). `stop_at` must be `HEAD` or an ancestor of it; callers are
+/// expected to have validated reachability already.
+pub fn commit_oids(repo: &Repository, stop_at: Option<Oid>) -> Result<Vec<Oid>> {
     let mut revwalk = repo.revwalk()?;
     revwalk
         .push_head()
         .context("repository has no HEAD commit")?;
     revwalk.set_sorting(Sort::TIME)?;
+
+    if let Some(stop_at) = stop_at {
+        // Hiding the parents keeps `stop_at` itself (a commit is never its own
+        // ancestor) while pruning everything older. A root commit has no
+        // parents, so nothing is hidden and the whole history is walked.
+        for parent in repo.find_commit(stop_at)?.parent_ids() {
+            revwalk.hide(parent)?;
+        }
+    }
+
     Ok(revwalk.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 

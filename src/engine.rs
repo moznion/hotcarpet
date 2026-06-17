@@ -28,6 +28,9 @@ pub struct AnalyzeConfig {
     pub repo: String,
     pub since: Option<i64>,
     pub until: Option<i64>,
+    /// Stop walking history once this commit is reached (inclusive). Anything
+    /// `git rev-parse` accepts; takes precedence over `since`/`until`.
+    pub since_commit: Option<String>,
     /// `None` includes every file; otherwise only paths matching the set.
     pub globset: Option<GlobSet>,
     /// Paths matching this set are dropped (applied after `globset`).
@@ -110,7 +113,15 @@ pub fn analyze(config: &AnalyzeConfig, registry: &AnalyzerRegistry) -> Result<An
     // libgit2 handles are not shareable across threads, so each worker reopens
     // the repository (cheap) and operates on its own handle.
     let git_dir = repo.path().to_path_buf();
-    let oids = git_history::commit_oids(&repo)?;
+
+    // Resolve the optional history floor up front so a bad or out-of-range
+    // revision fails fast, before any diffing work begins.
+    let stop_at = config
+        .since_commit
+        .as_deref()
+        .map(|rev| resolve_floor_commit(&repo, rev))
+        .transpose()?;
+    let oids = git_history::commit_oids(&repo, stop_at)?;
 
     // Each commit is independent: diff, read blobs, and parse in parallel.
     let outcomes: Vec<Option<CommitOutcome>> = oids
@@ -318,6 +329,29 @@ fn innermost_covering(symbols: &[Symbol], line: u32, max_depth: Option<u32>) -> 
                 span_b.cmp(&span_a)
             })
         })
+}
+
+/// Resolve a user-supplied revision (hash, abbreviated hash, ref, ...) to the id
+/// of the commit it points at, requiring it to be `HEAD` or an ancestor of it.
+/// A commit off to the side of HEAD's history can never bound the walk, so we
+/// reject it rather than silently scan the entire history.
+fn resolve_floor_commit(repo: &Repository, rev: &str) -> Result<Oid> {
+    let stop_at = repo
+        .revparse_single(rev)
+        .with_context(|| format!("could not resolve commit '{rev}'"))?
+        .peel_to_commit()
+        .map(|commit| commit.id())
+        .with_context(|| format!("'{rev}' does not refer to a commit"))?;
+
+    let head = repo
+        .head()?
+        .peel_to_commit()
+        .context("repository has no HEAD commit")?
+        .id();
+    if head != stop_at && !repo.graph_descendant_of(head, stop_at)? {
+        anyhow::bail!("commit '{rev}' is not reachable from HEAD");
+    }
+    Ok(stop_at)
 }
 
 fn path_included(config: &AnalyzeConfig, path: &str) -> bool {

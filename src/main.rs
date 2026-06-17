@@ -34,6 +34,7 @@ fn main() -> Result<()> {
         repo: cli.repo.clone(),
         since: cli.since_timestamp()?,
         until: cli.until_timestamp()?,
+        since_commit: cli.since_commit.clone(),
         globset: cli.include_globset()?,
         exclude: cli.exclude_globset()?,
         dig: !cli.no_dig,
