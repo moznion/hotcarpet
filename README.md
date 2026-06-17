@@ -6,7 +6,8 @@ most often over a given period.
 
 ## Features
 
-- **File leaderboard** — counts how many commits touched each file.
+- **File leaderboard** — counts how many commits touched each file (added,
+  modified, or deleted it).
 - **Time window** — restrict analysis with `--since` / `--until` (defaults to the
   whole history).
 - **Glob filter** — limit the analysis to matching paths (e.g. `src/**/*.ts`).
@@ -36,7 +37,11 @@ Options:
       --max-depth <N>    Largest function-nesting depth to report (1 = top-level only)
       --nested <MODE>    Nested-change attribution: innermost (default) | inclusive
       --table            Render human-readable tables instead of JSON
+  -j, --jobs <N>         Worker threads [default: number of logical CPUs]
 ```
+
+Commits are analyzed in parallel (diff + parse) across worker threads; results
+are deterministic regardless of thread count. Use `-j 1` to run serially.
 
 Dig-down reports nested functions too: a top-level function (or a method of a
 top-level class) is **depth 1**, a function defined inside one is depth 2, and so
@@ -86,8 +91,10 @@ hotcarpet --no-dig
 
 ## How it works
 
-1. `git_history` walks commits from `HEAD`, diffing each against its first parent
-   to find changed files and the new-side line numbers that were added/modified.
+1. `git_history` walks commits from `HEAD`, diffing each against its first parent.
+   The file list comes from a cheap OID-level delta (so a file counts as changed
+   whenever it is added, modified, **or deleted**); line numbers are computed only
+   for the files that need dig-down, via a pathspec-restricted diff.
 2. `engine` aggregates per-file change counts. By default it also digs down: for
    each changed file it reads that file's contents at the commit, asks the
    matching language plugin for the function/method spans, and credits the change

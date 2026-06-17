@@ -58,6 +58,10 @@ pub struct Cli {
     /// Render human-readable tables instead of the default JSON output.
     #[arg(long)]
     pub table: bool,
+
+    /// Number of worker threads. Defaults to the number of logical CPUs.
+    #[arg(short, long, value_name = "N")]
+    pub jobs: Option<usize>,
 }
 
 impl Cli {

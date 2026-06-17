@@ -16,6 +16,13 @@ use crate::output::Format;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if let Some(jobs) = cli.jobs {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(jobs)
+            .build_global()
+            .map_err(|e| anyhow::anyhow!("failed to configure {jobs} worker threads: {e}"))?;
+    }
+
     let config = AnalyzeConfig {
         repo: cli.repo.clone(),
         since: cli.since_timestamp()?,

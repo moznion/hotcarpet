@@ -3,12 +3,13 @@
 
 use anyhow::{Context, Result};
 use clap::ValueEnum;
-use git2::Repository;
+use git2::{Oid, Repository, Tree};
 use globset::GlobSet;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::{AnalyzerRegistry, Symbol};
-use crate::git_history::{self, HistoryOptions};
+use crate::git_history;
 
 /// How a changed line is attributed to nested functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -62,8 +63,30 @@ pub struct SymbolStat {
 /// Per-symbol accumulator while walking history.
 struct SymbolAgg {
     changes: u32,
-    /// Commit time of the latest observation, so line numbers track the newest.
+    /// Time and revwalk index of the latest observation, so line numbers track
+    /// the newest commit deterministically regardless of merge order.
     latest_time: i64,
+    latest_seq: usize,
+    start_line: u32,
+    end_line: u32,
+    depth: u32,
+}
+
+/// What one commit contributes, computed independently on a worker thread.
+struct CommitOutcome {
+    time: i64,
+    /// Position in the revwalk (0 = newest); used to break `latest_time` ties.
+    seq: usize,
+    /// Paths (matching the filters) the commit changed; each is one file hit.
+    files: Vec<String>,
+    /// Function/method hits, already de-duplicated within this commit.
+    symbols: Vec<SymbolHit>,
+}
+
+/// A single function/method credited with a change in one commit.
+struct SymbolHit {
+    path: String,
+    name: String,
     start_line: u32,
     end_line: u32,
     depth: u32,
@@ -84,50 +107,67 @@ pub fn analyze(config: &AnalyzeConfig) -> Result<AnalysisResult> {
     // Search upward from `repo` so hotcarpet works from any subdirectory.
     let repo = Repository::discover(&config.repo)
         .with_context(|| format!("no git repository found at or above '{}'", config.repo))?;
-
-    let history = git_history::collect_history(
-        &repo,
-        &HistoryOptions {
-            since: config.since,
-            until: config.until,
-        },
-    )?;
-
+    // libgit2 handles are not shareable across threads, so each worker reopens
+    // the repository (cheap) and operates on its own handle.
+    let git_dir = repo.path().to_path_buf();
+    let oids = git_history::commit_oids(&repo)?;
     let registry = AnalyzerRegistry::with_builtins();
 
+    // Each commit is independent: diff, read blobs, and parse in parallel.
+    let outcomes: Vec<Option<CommitOutcome>> = oids
+        .par_iter()
+        .enumerate()
+        .map_init(
+            || {
+                Repository::open(&git_dir)
+                    .expect("failed to reopen git repository in worker thread")
+            },
+            |repo, (seq, &oid)| analyze_commit(repo, config, &registry, seq, oid),
+        )
+        .collect::<Result<Vec<_>>>()?;
+
+    // Merge the per-commit results sequentially (cheap compared to the work above).
+    let mut commit_count = 0usize;
+    let mut period: Option<(i64, i64)> = None;
     let mut file_counts: HashMap<String, u32> = HashMap::new();
     let mut symbol_counts: HashMap<(String, String), SymbolAgg> = HashMap::new();
 
-    for commit in &history {
-        for change in &commit.files {
-            if !path_included(config, &change.path) {
-                continue;
-            }
-            *file_counts.entry(change.path.clone()).or_default() += 1;
-
-            if config.dig {
-                count_symbols(
-                    &repo,
-                    &registry,
-                    commit,
-                    change,
-                    config.max_depth,
-                    config.attribution,
-                    &mut symbol_counts,
-                );
+    for outcome in outcomes.into_iter().flatten() {
+        commit_count += 1;
+        period = Some(period.map_or((outcome.time, outcome.time), |(min, max)| {
+            (min.min(outcome.time), max.max(outcome.time))
+        }));
+        for path in outcome.files {
+            *file_counts.entry(path).or_default() += 1;
+        }
+        for hit in outcome.symbols {
+            let agg = symbol_counts
+                .entry((hit.path, hit.name))
+                .or_insert(SymbolAgg {
+                    changes: 0,
+                    latest_time: i64::MIN,
+                    latest_seq: usize::MAX,
+                    start_line: hit.start_line,
+                    end_line: hit.end_line,
+                    depth: hit.depth,
+                });
+            agg.changes += 1;
+            // Track line numbers/depth from the most recent commit (highest time;
+            // ties broken by the smaller revwalk index, i.e. the newer commit).
+            let more_recent = outcome.time > agg.latest_time
+                || (outcome.time == agg.latest_time && outcome.seq < agg.latest_seq);
+            if more_recent {
+                agg.latest_time = outcome.time;
+                agg.latest_seq = outcome.seq;
+                agg.start_line = hit.start_line;
+                agg.end_line = hit.end_line;
+                agg.depth = hit.depth;
             }
         }
     }
 
-    let period = history
-        .iter()
-        .map(|c| c.time)
-        .fold(None, |acc: Option<(i64, i64)>, t| {
-            Some(acc.map_or((t, t), |(min, max)| (min.min(t), max.max(t))))
-        });
-
     Ok(AnalysisResult {
-        commit_count: history.len(),
+        commit_count,
         period,
         glob_filtered: config.globset.is_some() || config.exclude.is_some(),
         files: rank_files(file_counts, config.top),
@@ -135,73 +175,135 @@ pub fn analyze(config: &AnalyzeConfig) -> Result<AnalysisResult> {
     })
 }
 
-/// For one changed file in one commit, attribute the change to each function /
-/// method whose line range overlaps the changed lines.
-fn count_symbols(
+/// Compute one commit's contribution. Returns `None` for commits outside the
+/// time window or that changed no files (mirroring the old skip behavior).
+fn analyze_commit(
     repo: &Repository,
+    config: &AnalyzeConfig,
     registry: &AnalyzerRegistry,
-    commit: &git_history::CommitChange,
-    change: &git_history::FileChange,
-    max_depth: Option<u32>,
-    attribution: Attribution,
-    symbol_counts: &mut HashMap<(String, String), SymbolAgg>,
+    seq: usize,
+    oid: Oid,
+) -> Result<Option<CommitOutcome>> {
+    let commit = repo.find_commit(oid)?;
+    let time = commit.time().seconds();
+    if config.since.is_some_and(|since| time < since) {
+        return Ok(None);
+    }
+    if config.until.is_some_and(|until| time > until) {
+        return Ok(None);
+    }
+
+    // Cheap, OID-level pass: which files changed (no content diffed yet).
+    let changed = git_history::changed_paths(repo, &commit)?;
+    if changed.is_empty() {
+        return Ok(None);
+    }
+
+    // File-level leaderboard counts every changed path that passes the filters.
+    // The dig pass only needs files an analyzer can handle.
+    let mut files = Vec::new();
+    let mut analyzable = Vec::new();
+    for path in changed {
+        if !path_included(config, &path) {
+            continue;
+        }
+        if config.dig && registry.for_path(&path).is_some() {
+            analyzable.push(path.clone());
+        }
+        files.push(path);
+    }
+
+    let mut symbols = Vec::new();
+    if !analyzable.is_empty() {
+        // Content-diff only the analyzable files to get their changed lines.
+        let lines = git_history::changed_lines(repo, &commit, &analyzable)?;
+        let tree = commit.tree()?;
+        for (path, changed_lines) in &lines {
+            collect_hits(
+                repo,
+                &tree,
+                registry,
+                path,
+                changed_lines,
+                config,
+                &mut symbols,
+            );
+        }
+    }
+
+    Ok(Some(CommitOutcome {
+        time,
+        seq,
+        files,
+        symbols,
+    }))
+}
+
+/// Attribute one changed file's lines to the function(s) that own them,
+/// appending the (per-commit de-duplicated) hits to `out`.
+fn collect_hits(
+    repo: &Repository,
+    tree: &Tree,
+    registry: &AnalyzerRegistry,
+    path: &str,
+    changed_lines: &[u32],
+    config: &AnalyzeConfig,
+    out: &mut Vec<SymbolHit>,
 ) {
-    let Some(analyzer) = registry.for_path(&change.path) else {
+    let Some(analyzer) = registry.for_path(path) else {
         return;
     };
-    let Some(content) = git_history::read_file_at(repo, &commit.id, &change.path) else {
+    let Some(content) = git_history::read_blob_from_tree(repo, tree, path) else {
         return;
     };
-    let Ok(symbols) = analyzer.extract_symbols(&change.path, &content) else {
+    let Ok(symbols) = analyzer.extract_symbols(path, &content) else {
         return;
     };
 
-    let changed: HashSet<u32> = change.changed_lines.iter().copied().collect();
+    let changed: HashSet<u32> = changed_lines.iter().copied().collect();
+    let max_depth = config.max_depth;
     // A symbol counts at most once per commit, even if many of its lines changed.
-    // Keep the line range observed so it can track the newest commit later.
     let mut touched: HashMap<String, (u32, u32, u32)> = HashMap::new();
     let within_depth = |s: &Symbol| max_depth.is_none_or(|max| s.depth <= max);
-    let mut mark = |s: &Symbol| {
-        touched
-            .entry(s.name.clone())
-            .or_insert((s.start_line, s.end_line, s.depth));
-    };
-    match attribution {
+    match config.attribution {
         // Every enclosing function within the depth limit gets credit.
         Attribution::Inclusive => {
             for symbol in symbols.iter().filter(|s| within_depth(s)) {
                 if changed.iter().any(|&line| symbol.covers(line)) {
-                    mark(symbol);
+                    touched.entry(symbol.name.clone()).or_insert((
+                        symbol.start_line,
+                        symbol.end_line,
+                        symbol.depth,
+                    ));
                 }
             }
         }
         // Only the single deepest enclosing function gets credit per line.
+        // Iterate lines in sorted order so that, when distinct same-named
+        // functions collide, the kept range is deterministic (not HashSet order).
         Attribution::Innermost => {
-            for &line in &changed {
+            let mut lines: Vec<u32> = changed.iter().copied().collect();
+            lines.sort_unstable();
+            for line in lines {
                 if let Some(symbol) = innermost_covering(&symbols, line, max_depth) {
-                    mark(symbol);
+                    touched.entry(symbol.name.clone()).or_insert((
+                        symbol.start_line,
+                        symbol.end_line,
+                        symbol.depth,
+                    ));
                 }
             }
         }
     }
+
     for (name, (start_line, end_line, depth)) in touched {
-        let agg = symbol_counts
-            .entry((change.path.clone(), name))
-            .or_insert(SymbolAgg {
-                changes: 0,
-                latest_time: i64::MIN,
-                start_line,
-                end_line,
-                depth,
-            });
-        agg.changes += 1;
-        // Prefer line numbers/depth from the most recent commit that touched it.
-        if commit.time >= agg.latest_time {
-            agg.latest_time = commit.time;
-            agg.start_line = start_line;
-            agg.end_line = end_line;
-            agg.depth = depth;
-        }
+        out.push(SymbolHit {
+            path: path.to_string(),
+            name,
+            start_line,
+            end_line,
+            depth,
+        });
     }
 }
 
