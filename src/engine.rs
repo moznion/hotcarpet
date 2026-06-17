@@ -103,7 +103,7 @@ pub struct AnalysisResult {
     pub symbols: Vec<SymbolStat>,
 }
 
-pub fn analyze(config: &AnalyzeConfig) -> Result<AnalysisResult> {
+pub fn analyze(config: &AnalyzeConfig, registry: &AnalyzerRegistry) -> Result<AnalysisResult> {
     // Search upward from `repo` so hotcarpet works from any subdirectory.
     let repo = Repository::discover(&config.repo)
         .with_context(|| format!("no git repository found at or above '{}'", config.repo))?;
@@ -111,7 +111,6 @@ pub fn analyze(config: &AnalyzeConfig) -> Result<AnalysisResult> {
     // the repository (cheap) and operates on its own handle.
     let git_dir = repo.path().to_path_buf();
     let oids = git_history::commit_oids(&repo)?;
-    let registry = AnalyzerRegistry::with_builtins();
 
     // Each commit is independent: diff, read blobs, and parse in parallel.
     let outcomes: Vec<Option<CommitOutcome>> = oids
@@ -122,7 +121,7 @@ pub fn analyze(config: &AnalyzeConfig) -> Result<AnalysisResult> {
                 Repository::open(&git_dir)
                     .expect("failed to reopen git repository in worker thread")
             },
-            |repo, (seq, &oid)| analyze_commit(repo, config, &registry, seq, oid),
+            |repo, (seq, &oid)| analyze_commit(repo, config, registry, seq, oid),
         )
         .collect::<Result<Vec<_>>>()?;
 

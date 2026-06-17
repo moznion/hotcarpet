@@ -29,6 +29,8 @@ Arguments:
 Options:
   -r, --repo <PATH>       Path to the git repository; discovered by searching
                           upward, so a subdirectory works too [default: .]
+  -c, --config <PATH>     Path to a TOML config file; otherwise .hotcarpet.toml
+                          is discovered by searching upward from --repo
   -e, --exclude <GLOB>    Globs of files to exclude; repeatable
       --since <DATE>      Only commits on or after this date (YYYY-MM-DD)
       --until <DATE>      Only commits on or before this date (YYYY-MM-DD)
@@ -104,12 +106,37 @@ hotcarpet --no-dig
    Diagnostics such as "no file matched the glob" go to stderr, keeping stdout
    valid JSON.
 
+## Configuration
+
+Dig-down picks the analyzer for a file by its extension. To analyze files with
+unconventional extensions — say a tool that emits `.vue` or `.astro` files whose
+`<script>` blocks are TypeScript — point them at an existing analyzer in a
+`.hotcarpet.toml` file. It is discovered by searching upward from `--repo`, or
+pass one explicitly with `-c, --config`.
+
+```toml
+# Analyzers are addressed by name (case-insensitive), e.g. [analyzers.typescript].
+[analyzers.typescript]
+# Add to the analyzer's built-in extension list:
+extra_extensions = ["vue", "astro"]
+
+# ...or replace the built-in list entirely (e.g. to stop digging into .js):
+# extensions = ["ts", "tsx"]
+```
+
+Extensions are matched case-insensitively and a leading dot is optional
+(`"vue"` and `".vue"` are equivalent). When both keys are given, `extensions`
+sets the base list and `extra_extensions` are appended to it. A config entry
+naming an analyzer that does not exist is reported to stderr and skipped.
+
 ## Adding a language plugin
 
 Implement `analyzer::LanguageAnalyzer` (report each function/method's name and
 1-based line range from a source string) and register it in
 `AnalyzerRegistry::with_builtins`. See `analyzer/typescript.rs` for a reference
-implementation using oxc.
+implementation using oxc. The analyzer's `name()` doubles as its config key, and
+its `extensions()` becomes the default mapping users can override (see
+[Configuration](#configuration)).
 
 ## Development
 

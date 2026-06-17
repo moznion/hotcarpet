@@ -6,7 +6,11 @@
 //! analyzer based on its extension. New languages are added by implementing the
 //! trait and registering it — nothing else in the codebase needs to change.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
+
+use crate::config::Config;
 
 mod typescript;
 
@@ -33,9 +37,8 @@ impl Symbol {
 
 /// A language plugin that extracts function / method spans from source code.
 pub trait LanguageAnalyzer: Send + Sync {
-    /// Human-readable language name. Part of the plugin API; surfaced when
-    /// listing the registered analyzers.
-    #[allow(dead_code)]
+    /// Human-readable language name. Also the key used to address this analyzer
+    /// from a config file (matched case-insensitively, e.g. `typescript`).
     fn name(&self) -> &'static str;
 
     /// File extensions (lower-case, without the leading dot) this analyzer handles.
@@ -46,35 +49,108 @@ pub trait LanguageAnalyzer: Send + Sync {
     fn extract_symbols(&self, path: &str, source: &str) -> Result<Vec<Symbol>>;
 }
 
+/// One registered analyzer together with the extensions it currently handles
+/// (its built-in list, possibly overridden by config).
+struct Entry {
+    analyzer: Box<dyn LanguageAnalyzer>,
+    extensions: Vec<String>,
+}
+
 /// Maps file extensions to the language analyzer that handles them.
 pub struct AnalyzerRegistry {
-    analyzers: Vec<Box<dyn LanguageAnalyzer>>,
+    entries: Vec<Entry>,
+    /// Extension (lower-case, no dot) -> index into `entries`. The first
+    /// registration claiming an extension wins.
+    by_ext: HashMap<String, usize>,
 }
 
 impl AnalyzerRegistry {
     /// A registry pre-loaded with every analyzer shipped with hotcarpet.
     pub fn with_builtins() -> Self {
         let mut registry = Self {
-            analyzers: Vec::new(),
+            entries: Vec::new(),
+            by_ext: HashMap::new(),
         };
         registry.register(Box::new(typescript::TypeScriptAnalyzer));
         registry
     }
 
-    /// Add a language analyzer. Later registrations take lower priority: the
-    /// first analyzer claiming an extension wins.
+    /// Add a language analyzer, seeding its extensions from the analyzer's
+    /// built-in list. Later registrations take lower priority: the first
+    /// analyzer claiming an extension wins.
     pub fn register(&mut self, analyzer: Box<dyn LanguageAnalyzer>) {
-        self.analyzers.push(analyzer);
+        let extensions = analyzer
+            .extensions()
+            .iter()
+            .filter_map(|e| normalize_ext(e))
+            .collect();
+        self.entries.push(Entry {
+            analyzer,
+            extensions,
+        });
+        self.rebuild_index();
+    }
+
+    /// Apply user configuration, overriding the extension mapping of named
+    /// analyzers. `extensions` replaces an analyzer's list wholesale (omitted =
+    /// keep the built-in list); `extra_extensions` are appended on top. Config
+    /// entries naming an unknown analyzer are reported to stderr and skipped.
+    pub fn apply_config(&mut self, config: &Config) {
+        for (name, cfg) in &config.analyzers {
+            let Some(entry) = self
+                .entries
+                .iter_mut()
+                .find(|e| e.analyzer.name().eq_ignore_ascii_case(name))
+            else {
+                eprintln!("hotcarpet: config refers to unknown analyzer '{name}'; ignoring");
+                continue;
+            };
+
+            let mut extensions: Vec<String> = match &cfg.extensions {
+                Some(list) => list.iter().filter_map(|e| normalize_ext(e)).collect(),
+                None => entry
+                    .analyzer
+                    .extensions()
+                    .iter()
+                    .filter_map(|e| normalize_ext(e))
+                    .collect(),
+            };
+            extensions.extend(cfg.extra_extensions.iter().filter_map(|e| normalize_ext(e)));
+            dedup_in_place(&mut extensions);
+            entry.extensions = extensions;
+        }
+        self.rebuild_index();
     }
 
     /// The analyzer responsible for `path`, if any.
     pub fn for_path(&self, path: &str) -> Option<&dyn LanguageAnalyzer> {
         let ext = extension_of(path)?;
-        self.analyzers
-            .iter()
-            .find(|a| a.extensions().contains(&ext.as_str()))
-            .map(|a| a.as_ref())
+        self.by_ext
+            .get(&ext)
+            .map(|&i| self.entries[i].analyzer.as_ref())
     }
+
+    /// Rebuild the extension index from the entries (first registration wins).
+    fn rebuild_index(&mut self) {
+        self.by_ext.clear();
+        for (i, entry) in self.entries.iter().enumerate() {
+            for ext in &entry.extensions {
+                self.by_ext.entry(ext.clone()).or_insert(i);
+            }
+        }
+    }
+}
+
+/// Normalize an extension: trim, drop a leading dot, lower-case. Empty -> None.
+fn normalize_ext(ext: &str) -> Option<String> {
+    let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    (!ext.is_empty()).then_some(ext)
+}
+
+/// Remove duplicate strings, keeping first occurrences (order-preserving).
+fn dedup_in_place(items: &mut Vec<String>) {
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|x| seen.insert(x.clone()));
 }
 
 /// Lower-cased file extension (without dot) of `path`, if it has one.
@@ -132,5 +208,71 @@ mod tests {
     fn extension_lookup() {
         assert_eq!(extension_of("src/a.TS").as_deref(), Some("ts"));
         assert_eq!(extension_of("Makefile"), None);
+    }
+
+    use crate::config::{AnalyzerConfig, Config};
+
+    fn config_with(name: &str, cfg: AnalyzerConfig) -> Config {
+        let mut analyzers = HashMap::new();
+        analyzers.insert(name.to_string(), cfg);
+        Config { analyzers }
+    }
+
+    fn analyzer_name(registry: &AnalyzerRegistry, path: &str) -> Option<&'static str> {
+        registry.for_path(path).map(|a| a.name())
+    }
+
+    #[test]
+    fn builtin_extensions_route_to_typescript() {
+        let registry = AnalyzerRegistry::with_builtins();
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
+        assert_eq!(analyzer_name(&registry, "a.vue"), None);
+    }
+
+    #[test]
+    fn extra_extensions_add_to_defaults() {
+        let mut registry = AnalyzerRegistry::with_builtins();
+        registry.apply_config(&config_with(
+            // analyzer name is matched case-insensitively
+            "typescript",
+            AnalyzerConfig {
+                extensions: None,
+                extra_extensions: vec![".VUE".to_string()],
+            },
+        ));
+        // the new extension is normalized and routed...
+        assert_eq!(analyzer_name(&registry, "a.vue"), Some("TypeScript"));
+        // ...and the built-in extensions still work.
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
+    }
+
+    #[test]
+    fn extensions_replace_defaults() {
+        let mut registry = AnalyzerRegistry::with_builtins();
+        registry.apply_config(&config_with(
+            "TypeScript",
+            AnalyzerConfig {
+                extensions: Some(vec!["ts".to_string(), "tsx".to_string()]),
+                extra_extensions: vec![],
+            },
+        ));
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
+        // `.js` was in the defaults but is dropped by the replacement.
+        assert_eq!(analyzer_name(&registry, "a.js"), None);
+    }
+
+    #[test]
+    fn unknown_analyzer_is_ignored() {
+        let mut registry = AnalyzerRegistry::with_builtins();
+        registry.apply_config(&config_with(
+            "rust",
+            AnalyzerConfig {
+                extensions: Some(vec!["rs".to_string()]),
+                extra_extensions: vec![],
+            },
+        ));
+        // No analyzer named "rust"; the entry is skipped, defaults unchanged.
+        assert_eq!(analyzer_name(&registry, "a.rs"), None);
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
     }
 }

@@ -2,6 +2,7 @@
 
 mod analyzer;
 mod cli;
+mod config;
 mod engine;
 mod git_history;
 mod output;
@@ -9,7 +10,9 @@ mod output;
 use anyhow::Result;
 use clap::Parser;
 
+use crate::analyzer::AnalyzerRegistry;
 use crate::cli::Cli;
+use crate::config::Config;
 use crate::engine::{AnalyzeConfig, analyze};
 use crate::output::Format;
 
@@ -22,6 +25,10 @@ fn main() -> Result<()> {
             .build_global()
             .map_err(|e| anyhow::anyhow!("failed to configure {jobs} worker threads: {e}"))?;
     }
+
+    let user_config = Config::resolve(cli.config.as_deref(), &cli.repo)?;
+    let mut registry = AnalyzerRegistry::with_builtins();
+    registry.apply_config(&user_config);
 
     let config = AnalyzeConfig {
         repo: cli.repo.clone(),
@@ -41,7 +48,7 @@ fn main() -> Result<()> {
         Format::Json
     };
 
-    let result = analyze(&config)?;
+    let result = analyze(&config, &registry)?;
     output::render(&result, format);
     Ok(())
 }

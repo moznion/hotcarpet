@@ -17,6 +17,11 @@ pub struct Cli {
     #[arg(short, long, default_value = ".", value_name = "PATH")]
     pub repo: String,
 
+    /// Path to a TOML config file. When omitted, `.hotcarpet.toml` is
+    /// discovered by searching upward from `--repo`.
+    #[arg(short = 'c', long, value_name = "PATH")]
+    pub config: Option<String>,
+
     /// Only consider commits on or after this date (YYYY-MM-DD).
     #[arg(long, value_name = "DATE")]
     pub since: Option<String>,
