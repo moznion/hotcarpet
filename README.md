@@ -4,6 +4,38 @@ Find the "hot" spots of a codebase from its git history. hotcarpet ranks the
 files — and, optionally, the individual functions and methods — that changed
 most often over a given period.
 
+### Examples
+
+```sh
+# Hot files and functions across the whole history
+hotcarpet
+
+# TypeScript hot functions changed in the first half of 2026
+hotcarpet 'src/**/*.ts' --since 2026-01-01 --until 2026-06-30
+
+# Exclude test files from the analysis
+hotcarpet 'src/**/*.ts' --exclude '**/*.test.ts'
+
+# Only history back to (and including) a specific commit, e.g. since a release
+hotcarpet --since-commit v1.0.0
+
+# Only the 50 most recent commits
+hotcarpet --max-commits 50
+
+# Only top-level functions/methods (ignore nested closures)
+hotcarpet 'src/**/*.ts' --max-depth 1
+
+# Human-readable tables instead of JSON
+hotcarpet --table
+
+# Pipe the JSON into jq — e.g. the 5 hottest functions
+hotcarpet 'src/**/*.ts' | jq '.symbols[:5]'
+
+# File-level leaderboard only (faster; no source parsing)
+hotcarpet --no-dig
+```
+
+
 ## Features
 
 - **File leaderboard** — counts how many commits touched each file (added,
@@ -76,37 +108,6 @@ Glob patterns match paths **relative to the repository root**, regardless of the
 directory you run hotcarpet from — so `hotcarpet 'src/**/*.ts'` always means
 `src/` under the repo root. A leading `./` is stripped automatically, and globs
 should be quoted so your shell doesn't expand them first.
-
-### Examples
-
-```sh
-# Hot files and functions across the whole history
-hotcarpet
-
-# TypeScript hot functions changed in the first half of 2026
-hotcarpet 'src/**/*.ts' --since 2026-01-01 --until 2026-06-30
-
-# Exclude test files from the analysis
-hotcarpet 'src/**/*.ts' --exclude '**/*.test.ts'
-
-# Only history back to (and including) a specific commit, e.g. since a release
-hotcarpet --since-commit v1.0.0
-
-# Only the 50 most recent commits
-hotcarpet --max-commits 50
-
-# Only top-level functions/methods (ignore nested closures)
-hotcarpet 'src/**/*.ts' --max-depth 1
-
-# Human-readable tables instead of JSON
-hotcarpet --table
-
-# Pipe the JSON into jq — e.g. the 5 hottest functions
-hotcarpet 'src/**/*.ts' | jq '.symbols[:5]'
-
-# File-level leaderboard only (faster; no source parsing)
-hotcarpet --no-dig
-```
 
 ## How it works
 
