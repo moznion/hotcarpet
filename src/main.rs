@@ -35,6 +35,7 @@ fn main() -> Result<()> {
         since: cli.since_timestamp()?,
         until: cli.until_timestamp()?,
         since_commit: cli.since_commit.clone(),
+        max_commits: cli.max_commits_limit(),
         globset: cli.include_globset()?,
         exclude: cli.exclude_globset()?,
         dig: !cli.no_dig,

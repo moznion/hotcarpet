@@ -29,8 +29,12 @@ pub struct AnalyzeConfig {
     pub since: Option<i64>,
     pub until: Option<i64>,
     /// Stop walking history once this commit is reached (inclusive). Anything
-    /// `git rev-parse` accepts; takes precedence over `since`/`until`.
+    /// `git rev-parse` accepts; takes precedence over `since`/`until` and
+    /// `max_commits`.
     pub since_commit: Option<String>,
+    /// Walk back at most this many commits from `HEAD` (`None` = no limit).
+    /// Takes precedence over `since`/`until`, but is overridden by `since_commit`.
+    pub max_commits: Option<usize>,
     /// `None` includes every file; otherwise only paths matching the set.
     pub globset: Option<GlobSet>,
     /// Paths matching this set are dropped (applied after `globset`).
@@ -121,7 +125,14 @@ pub fn analyze(config: &AnalyzeConfig, registry: &AnalyzerRegistry) -> Result<An
         .as_deref()
         .map(|rev| resolve_floor_commit(&repo, rev))
         .transpose()?;
-    let oids = git_history::commit_oids(&repo, stop_at)?;
+    // `--since-commit` wins over `--max-commits`, so the count limit only
+    // applies when no floor commit was given.
+    let limit = if stop_at.is_some() {
+        None
+    } else {
+        config.max_commits
+    };
+    let oids = git_history::commit_oids(&repo, stop_at, limit)?;
 
     // Each commit is independent: diff, read blobs, and parse in parallel.
     let outcomes: Vec<Option<CommitOutcome>> = oids

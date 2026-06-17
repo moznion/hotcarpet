@@ -38,6 +38,13 @@ pub struct Cli {
     #[arg(long, value_name = "COMMIT")]
     pub since_commit: Option<String>,
 
+    /// Walk back at most this many commits from HEAD (the N most recent). This
+    /// takes precedence over `--since` / `--until`: those still filter the
+    /// commits that are walked, but the walk never goes back more than N.
+    /// `--since-commit` takes precedence over this. Use 0 for no limit.
+    #[arg(long, value_name = "N")]
+    pub max_commits: Option<usize>,
+
     /// Globs of files to include. Omit to include every file.
     /// Example: hotcarpet 'src/**/*.ts'
     #[arg(value_name = "GLOB")]
@@ -110,6 +117,12 @@ impl Cli {
     /// `top` as an `Option`, where 0 means "no limit".
     pub fn top_limit(&self) -> Option<usize> {
         (self.top != 0).then_some(self.top)
+    }
+
+    /// `max_commits` as a traversal limit, where an absent flag or 0 means
+    /// "no limit" (consistent with `--top`).
+    pub fn max_commits_limit(&self) -> Option<usize> {
+        self.max_commits.filter(|&n| n != 0)
     }
 }
 

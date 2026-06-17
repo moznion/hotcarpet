@@ -11,7 +11,9 @@ most often over a given period.
 - **Time window** — restrict analysis with `--since` / `--until` (defaults to the
   whole history).
 - **Commit floor** — stop walking history at a given commit with `--since-commit`
-  (inclusive); it takes precedence over `--since` / `--until`.
+  (inclusive), or cap the walk to the N most recent commits with `--max-commits`.
+  Both take precedence over `--since` / `--until`; `--since-commit` wins over
+  `--max-commits`.
 - **Glob filter** — limit the analysis to matching paths (e.g. `src/**/*.ts`).
 - **Dig down** (on by default) — attribute each change to the specific function
   or method it modified, with its line range. Disable with `--no-dig`.
@@ -39,6 +41,9 @@ Options:
       --since-commit <COMMIT>
                           Stop walking history at this commit (inclusive);
                           takes precedence over --since / --until
+      --max-commits <N>   Walk back at most N commits from HEAD; takes precedence
+                          over --since / --until, but --since-commit wins over it.
+                          0 = no limit
 
   -t, --top <N>          Show top N rows per leaderboard; 0 = no limit [default: 20]
       --no-dig           Skip function/method dig-down; show only the file leaderboard
@@ -86,6 +91,9 @@ hotcarpet 'src/**/*.ts' --exclude '**/*.test.ts'
 
 # Only history back to (and including) a specific commit, e.g. since a release
 hotcarpet --since-commit v1.0.0
+
+# Only the 50 most recent commits
+hotcarpet --max-commits 50
 
 # Only top-level functions/methods (ignore nested closures)
 hotcarpet 'src/**/*.ts' --max-depth 1

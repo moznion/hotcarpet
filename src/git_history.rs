@@ -10,14 +10,23 @@ use git2::{Commit, Diff, DiffOptions, Oid, Repository, Sort, Tree};
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Commit ids reachable from `HEAD`, newest first. When `stop_at` is given, the
-/// walk is bounded below by that commit: it (and every commit between it and
-/// `HEAD`) is included, while its ancestors are excluded. The bound is applied
-/// topologically — by hiding `stop_at`'s parents — so it is correct regardless
-/// of commit timestamps (unlike stopping when the commit happens to be visited
-/// in time order). `stop_at` must be `HEAD` or an ancestor of it; callers are
-/// expected to have validated reachability already.
-pub fn commit_oids(repo: &Repository, stop_at: Option<Oid>) -> Result<Vec<Oid>> {
+/// Commit ids reachable from `HEAD`, newest first. The walk can be bounded below
+/// two ways:
+///
+/// - `stop_at`: include that commit (and everything between it and `HEAD`) while
+///   excluding its ancestors. The bound is applied topologically — by hiding
+///   `stop_at`'s parents — so it is correct regardless of commit timestamps
+///   (unlike stopping when the commit happens to be visited in time order).
+///   `stop_at` must be `HEAD` or an ancestor of it; callers are expected to have
+///   validated reachability already.
+/// - `limit`: keep at most this many commits (the N most recent walked).
+///
+/// Callers decide precedence and pass only the bound that should apply.
+pub fn commit_oids(
+    repo: &Repository,
+    stop_at: Option<Oid>,
+    limit: Option<usize>,
+) -> Result<Vec<Oid>> {
     let mut revwalk = repo.revwalk()?;
     revwalk
         .push_head()
@@ -33,7 +42,14 @@ pub fn commit_oids(repo: &Repository, stop_at: Option<Oid>) -> Result<Vec<Oid>> 
         }
     }
 
-    Ok(revwalk.collect::<std::result::Result<Vec<_>, _>>()?)
+    let mut oids = Vec::new();
+    for oid in revwalk {
+        oids.push(oid?);
+        if limit.is_some_and(|limit| oids.len() >= limit) {
+            break;
+        }
+    }
+    Ok(oids)
 }
 
 /// Paths changed by `commit` versus its first parent. This is the cheap,
