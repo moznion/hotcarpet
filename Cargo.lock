@@ -422,9 +422,11 @@ dependencies = [
  "oxc_parser",
  "oxc_span",
  "oxc_syntax",
+ "proc-macro2",
  "rayon",
  "serde",
  "serde_json",
+ "syn",
  "toml",
 ]
 

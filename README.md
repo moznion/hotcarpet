@@ -50,7 +50,8 @@ hotcarpet --no-dig
 - **Dig down** (on by default) — attribute each change to the specific function
   or method it modified, with its line range. Disable with `--no-dig`.
 - **Language plugins** — dig-down is powered by pluggable per-language analyzers.
-  TypeScript / JavaScript ships in the box, parsed with [oxc](https://oxc.rs).
+  TypeScript / JavaScript (parsed with [oxc](https://oxc.rs)) and Rust (parsed
+  with [syn](https://docs.rs/syn)) ship in the box.
 - **JSON by default** — machine-readable output for piping into `jq` etc.; pass
   `--table` for human-readable tables.
 
@@ -151,9 +152,10 @@ naming an analyzer that does not exist is reported to stderr and skipped.
 
 Implement `analyzer::LanguageAnalyzer` (report each function/method's name and
 1-based line range from a source string) and register it in
-`AnalyzerRegistry::with_builtins`. See `analyzer/typescript.rs` for a reference
-implementation using oxc. The analyzer's `name()` doubles as its config key, and
-its `extensions()` becomes the default mapping users can override (see
+`AnalyzerRegistry::with_builtins`. See `analyzer/typescript.rs` (oxc) or
+`analyzer/rust.rs` (syn) for reference implementations. The analyzer's `name()`
+doubles as its config key, and its `extensions()` becomes the default mapping
+users can override (see
 [Configuration](#configuration)).
 
 ## Development
