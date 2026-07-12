@@ -55,6 +55,9 @@ pub trait LanguageAnalyzer: Send + Sync {
 struct Entry {
     analyzer: Box<dyn LanguageAnalyzer>,
     extensions: Vec<String>,
+    /// Whether this analyzer participates in dig-down. A disabled analyzer
+    /// claims no extensions, so its files fall through to file-level counting.
+    enabled: bool,
 }
 
 /// Maps file extensions to the language analyzer that handles them.
@@ -89,14 +92,16 @@ impl AnalyzerRegistry {
         self.entries.push(Entry {
             analyzer,
             extensions,
+            enabled: true,
         });
         self.rebuild_index();
     }
 
-    /// Apply user configuration, overriding the extension mapping of named
-    /// analyzers. `extensions` replaces an analyzer's list wholesale (omitted =
-    /// keep the built-in list); `extra_extensions` are appended on top. Config
-    /// entries naming an unknown analyzer are reported to stderr and skipped.
+    /// Apply user configuration to the named analyzers. `enabled = false`
+    /// removes an analyzer from dig-down (omitted = enabled). `extensions`
+    /// replaces an analyzer's list wholesale (omitted = keep the built-in
+    /// list). Config entries naming an unknown analyzer are reported to stderr
+    /// and skipped.
     pub fn apply_config(&mut self, config: &Config) {
         for (name, cfg) in &config.analyzers {
             let Some(entry) = self
@@ -108,18 +113,14 @@ impl AnalyzerRegistry {
                 continue;
             };
 
-            let mut extensions: Vec<String> = match &cfg.extensions {
-                Some(list) => list.iter().filter_map(|e| normalize_ext(e)).collect(),
-                None => entry
-                    .analyzer
-                    .extensions()
-                    .iter()
-                    .filter_map(|e| normalize_ext(e))
-                    .collect(),
-            };
-            extensions.extend(cfg.extra_extensions.iter().filter_map(|e| normalize_ext(e)));
-            dedup_in_place(&mut extensions);
-            entry.extensions = extensions;
+            entry.enabled = cfg.enabled.unwrap_or(true);
+
+            if let Some(list) = &cfg.extensions {
+                let mut extensions: Vec<String> =
+                    list.iter().filter_map(|e| normalize_ext(e)).collect();
+                dedup_in_place(&mut extensions);
+                entry.extensions = extensions;
+            }
         }
         self.rebuild_index();
     }
@@ -133,9 +134,13 @@ impl AnalyzerRegistry {
     }
 
     /// Rebuild the extension index from the entries (first registration wins).
+    /// Disabled analyzers are skipped, so they claim no extensions.
     fn rebuild_index(&mut self) {
         self.by_ext.clear();
         for (i, entry) in self.entries.iter().enumerate() {
+            if !entry.enabled {
+                continue;
+            }
             for ext in &entry.extensions {
                 self.by_ext.entry(ext.clone()).or_insert(i);
             }
@@ -238,30 +243,14 @@ mod tests {
     }
 
     #[test]
-    fn extra_extensions_add_to_defaults() {
-        let mut registry = AnalyzerRegistry::with_builtins();
-        registry.apply_config(&config_with(
-            // analyzer name is matched case-insensitively
-            "typescript",
-            AnalyzerConfig {
-                extensions: None,
-                extra_extensions: vec![".VUE".to_string()],
-            },
-        ));
-        // the new extension is normalized and routed...
-        assert_eq!(analyzer_name(&registry, "a.vue"), Some("TypeScript"));
-        // ...and the built-in extensions still work.
-        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
-    }
-
-    #[test]
     fn extensions_replace_defaults() {
         let mut registry = AnalyzerRegistry::with_builtins();
         registry.apply_config(&config_with(
+            // analyzer name is matched case-insensitively
             "TypeScript",
             AnalyzerConfig {
+                enabled: None,
                 extensions: Some(vec!["ts".to_string(), "tsx".to_string()]),
-                extra_extensions: vec![],
             },
         ));
         assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
@@ -270,13 +259,83 @@ mod tests {
     }
 
     #[test]
+    fn configured_extensions_are_normalized() {
+        let mut registry = AnalyzerRegistry::with_builtins();
+        registry.apply_config(&config_with(
+            "typescript",
+            AnalyzerConfig {
+                enabled: None,
+                // Leading dots and case are normalized away.
+                extensions: Some(vec![".TS".to_string(), "VUE".to_string()]),
+            },
+        ));
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
+        assert_eq!(analyzer_name(&registry, "a.vue"), Some("TypeScript"));
+    }
+
+    #[test]
+    fn disabled_analyzer_claims_no_extensions() {
+        let mut registry = AnalyzerRegistry::with_builtins();
+        registry.apply_config(&config_with(
+            "rust",
+            AnalyzerConfig {
+                enabled: Some(false),
+                extensions: None,
+            },
+        ));
+        // Rust files no longer route to an analyzer...
+        assert_eq!(analyzer_name(&registry, "a.rs"), None);
+        // ...while other languages are untouched.
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
+    }
+
+    #[test]
+    fn disabling_frees_extensions_for_a_later_analyzer() {
+        // A disabled analyzer must not squat on a shared extension: another
+        // analyzer configured to handle it should win.
+        let mut registry = AnalyzerRegistry::with_builtins();
+        let mut analyzers = HashMap::new();
+        analyzers.insert(
+            "typescript".to_string(),
+            AnalyzerConfig {
+                enabled: Some(false),
+                extensions: None,
+            },
+        );
+        analyzers.insert(
+            "rust".to_string(),
+            AnalyzerConfig {
+                enabled: None,
+                extensions: Some(vec!["rs".to_string(), "ts".to_string()]),
+            },
+        );
+        registry.apply_config(&Config { analyzers });
+
+        // TypeScript is disabled, so `.ts` falls through to Rust's ext list.
+        assert_eq!(analyzer_name(&registry, "a.ts"), Some("Rust"));
+    }
+
+    #[test]
+    fn enabled_true_is_a_no_op() {
+        let mut registry = AnalyzerRegistry::with_builtins();
+        registry.apply_config(&config_with(
+            "rust",
+            AnalyzerConfig {
+                enabled: Some(true),
+                extensions: None,
+            },
+        ));
+        assert_eq!(analyzer_name(&registry, "a.rs"), Some("Rust"));
+    }
+
+    #[test]
     fn unknown_analyzer_is_ignored() {
         let mut registry = AnalyzerRegistry::with_builtins();
         registry.apply_config(&config_with(
             "python",
             AnalyzerConfig {
+                enabled: None,
                 extensions: Some(vec!["py".to_string()]),
-                extra_extensions: vec![],
             },
         ));
         // No analyzer named "python"; the entry is skipped, defaults unchanged.

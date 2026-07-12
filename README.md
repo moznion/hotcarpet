@@ -51,7 +51,9 @@ hotcarpet --no-dig
   or method it modified, with its line range. Disable with `--no-dig`.
 - **Language plugins** — dig-down is powered by pluggable per-language analyzers.
   TypeScript / JavaScript (parsed with [oxc](https://oxc.rs)) and Rust (parsed
-  with [syn](https://docs.rs/syn)) ship in the box.
+  with [syn](https://docs.rs/syn)) ship in the box. Each can be enabled/disabled
+  and have its file extensions configured per language (see
+  [Configuration](#configuration)).
 - **JSON by default** — machine-readable output for piping into `jq` etc.; pass
   `--table` for human-readable tables.
 
@@ -127,25 +129,29 @@ should be quoted so your shell doesn't expand them first.
 
 ## Configuration
 
-Dig-down picks the analyzer for a file by its extension. To analyze files with
-unconventional extensions — say a tool that emits `.vue` or `.astro` files whose
-`<script>` blocks are TypeScript — point them at an existing analyzer in a
-`.hotcarpet.toml` file. It is discovered by searching upward from `--repo`, or
-pass one explicitly with `-c, --config`.
+Dig-down is configured per language in a `.hotcarpet.toml` file: you can turn an
+individual analyzer off, and control which file extensions map to it. The file
+is discovered by searching upward from `--repo`, or pass one explicitly with
+`-c, --config`.
 
 ```toml
 # Analyzers are addressed by name (case-insensitive), e.g. [analyzers.typescript].
 [analyzers.typescript]
-# Add to the analyzer's built-in extension list:
-extra_extensions = ["vue", "astro"]
+# Replace the analyzer's built-in extension list entirely — e.g. to also dig
+# into .vue/.astro files, or to stop digging into .js:
+extensions = ["ts", "tsx", "vue", "astro"]
 
-# ...or replace the built-in list entirely (e.g. to stop digging into .js):
-# extensions = ["ts", "tsx"]
+# Turn dig-down off for a language. Its files still count toward the file
+# leaderboard; they just aren't parsed into functions/methods.
+[analyzers.rust]
+enabled = false
 ```
 
-Extensions are matched case-insensitively and a leading dot is optional
-(`"vue"` and `".vue"` are equivalent). When both keys are given, `extensions`
-sets the base list and `extra_extensions` are appended to it. A config entry
+`enabled` defaults to `true`; set it to `false` to skip a language while still
+digging into the others (unlike `--no-dig`, which disables dig-down globally).
+`extensions` replaces the analyzer's built-in extension list wholesale; omit it
+to keep the built-in list. Extensions are matched case-insensitively and a
+leading dot is optional (`"vue"` and `".vue"` are equivalent). A config entry
 naming an analyzer that does not exist is reported to stderr and skipped.
 
 ## Adding a language plugin
