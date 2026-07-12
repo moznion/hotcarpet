@@ -18,6 +18,10 @@ jobs:
   check:
     name: fmt / clippy / test
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # to comment on a pull request using octocov
+      contents: write # to store the reports in the octocov-reports branch using octocov
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -25,10 +29,15 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview # llvm-tools-preview is required by cargo-llvm-cov
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-llvm-cov
 
       - name: Format
         run: cargo fmt --all --check
@@ -36,5 +45,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked --all-targets
+      # Runs the tests and emits an LCOV report for octocov in one pass.
+      - name: Test & measure coverage (cargo-llvm-cov -> LCOV)
+        run: cargo llvm-cov --locked --all-targets --lcov --output-path coverage.lcov
+
+      # Passes the LCOV report to octocov so it can comment on pull requests and
+      # store the coverage report in the octocov-reports datastore branch.
+      - name: Run octocov
+        uses: k1LoW/octocov-action@b3b6ee60482a667950f87553abf1df63217235d9 # v1.5.1
+        with:
+          config: .octocov.yml

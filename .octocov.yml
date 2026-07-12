@@ -1,0 +1,23 @@
+# Configuration for tracking code coverage as octocov reports.
+#
+# - Coverage is measured by cargo-llvm-cov and emitted in LCOV format to
+#   `coverage.lcov` by the `check` job of ci.yml. octocov auto-detects the LCOV
+#   format from the file path below.
+# - Stores the coverage reports in a dedicated `octocov-reports` datastore
+#   branch so the diff against the default branch can be reported on pull
+#   requests.
+coverage:
+  if: true
+  paths:
+    - coverage.lcov
+comment:
+  if: is_pull_request
+summary:
+  if: true
+report:
+  if: is_default_branch
+  datastores:
+    - github://${GITHUB_REPOSITORY}@octocov/coverage-reports
+diff:
+  datastores:
+    - github://${GITHUB_REPOSITORY}@octocov/coverage-reports
