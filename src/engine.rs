@@ -88,6 +88,9 @@ struct CommitOutcome {
     files: Vec<String>,
     /// Function/method hits, already de-duplicated within this commit.
     symbols: Vec<SymbolHit>,
+    /// Paths whose analyzer failed to parse this commit's revision, so dig-down
+    /// fell back to file-level counting for them.
+    parse_failures: Vec<String>,
 }
 
 /// A single function/method credited with a change in one commit.
@@ -106,6 +109,13 @@ pub struct AnalysisResult {
     pub period: Option<(i64, i64)>,
     /// Whether a glob filter was applied (used to explain empty results).
     pub glob_filtered: bool,
+    /// Total distinct files that changed and passed the filters, before any
+    /// `--top` truncation of the leaderboard.
+    pub total_files: usize,
+    /// Distinct files an analyzer failed to parse at some revision (dig-down fell
+    /// back to file-level counting for them), sorted by path. Empty when dig-down
+    /// is disabled or every file parsed cleanly.
+    pub parse_failures: Vec<String>,
     pub files: Vec<FileStat>,
     pub symbols: Vec<SymbolStat>,
 }
@@ -147,11 +157,25 @@ pub fn analyze(config: &AnalyzeConfig, registry: &AnalyzerRegistry) -> Result<An
         )
         .collect::<Result<Vec<_>>>()?;
 
-    // Merge the per-commit results sequentially (cheap compared to the work above).
+    let glob_filtered = config.globset.is_some() || config.exclude.is_some();
+    Ok(reduce_outcomes(outcomes, config.top, glob_filtered))
+}
+
+/// Merge the independent per-commit results into the final leaderboards. Split
+/// out from [`analyze`] so the aggregation (change counts, `total_files`, the
+/// de-duplicated/sorted parse-failure list, and "latest commit wins" line
+/// tracking) can be unit-tested without a git repository. `None` outcomes are
+/// commits that were skipped and contribute nothing.
+fn reduce_outcomes(
+    outcomes: Vec<Option<CommitOutcome>>,
+    top: Option<usize>,
+    glob_filtered: bool,
+) -> AnalysisResult {
     let mut commit_count = 0usize;
     let mut period: Option<(i64, i64)> = None;
     let mut file_counts: HashMap<String, u32> = HashMap::new();
     let mut symbol_counts: HashMap<(String, String), SymbolAgg> = HashMap::new();
+    let mut parse_failures: HashSet<String> = HashSet::new();
 
     for outcome in outcomes.into_iter().flatten() {
         commit_count += 1;
@@ -161,6 +185,7 @@ pub fn analyze(config: &AnalyzeConfig, registry: &AnalyzerRegistry) -> Result<An
         for path in outcome.files {
             *file_counts.entry(path).or_default() += 1;
         }
+        parse_failures.extend(outcome.parse_failures);
         for hit in outcome.symbols {
             let agg = symbol_counts
                 .entry((hit.path, hit.name))
@@ -187,13 +212,19 @@ pub fn analyze(config: &AnalyzeConfig, registry: &AnalyzerRegistry) -> Result<An
         }
     }
 
-    Ok(AnalysisResult {
+    let total_files = file_counts.len();
+    let mut parse_failures: Vec<String> = parse_failures.into_iter().collect();
+    parse_failures.sort();
+
+    AnalysisResult {
         commit_count,
         period,
-        glob_filtered: config.globset.is_some() || config.exclude.is_some(),
-        files: rank_files(file_counts, config.top),
-        symbols: rank_symbols(symbol_counts, config.top),
-    })
+        glob_filtered,
+        total_files,
+        parse_failures,
+        files: rank_files(file_counts, top),
+        symbols: rank_symbols(symbol_counts, top),
+    }
 }
 
 /// Compute one commit's contribution. Returns `None` for commits outside the
@@ -234,7 +265,7 @@ fn analyze_commit(
         files.push(path);
     }
 
-    let mut symbols = Vec::new();
+    let mut hits = CommitHits::default();
     if !analyzable.is_empty() {
         // Content-diff only the analyzable files to get their changed lines.
         let lines = git_history::changed_lines(repo, &commit, &analyzable)?;
@@ -247,7 +278,7 @@ fn analyze_commit(
                 path,
                 changed_lines,
                 config,
-                &mut symbols,
+                &mut hits,
             );
         }
     }
@@ -256,12 +287,23 @@ fn analyze_commit(
         time,
         seq,
         files,
-        symbols,
+        symbols: hits.symbols,
+        parse_failures: hits.parse_failures,
     }))
 }
 
+/// What one commit's dig-down pass produces, filled in by [`collect_hits`].
+#[derive(Default)]
+struct CommitHits {
+    /// Function/method hits, de-duplicated within the commit.
+    symbols: Vec<SymbolHit>,
+    /// Paths whose analyzer failed to parse this revision.
+    parse_failures: Vec<String>,
+}
+
 /// Attribute one changed file's lines to the function(s) that own them,
-/// appending the (per-commit de-duplicated) hits to `out`.
+/// appending the (per-commit de-duplicated) hits to `hits.symbols`. A path whose
+/// analyzer fails to parse this revision is recorded in `hits.parse_failures`.
 fn collect_hits(
     repo: &Repository,
     tree: &Tree,
@@ -269,7 +311,7 @@ fn collect_hits(
     path: &str,
     changed_lines: &[u32],
     config: &AnalyzeConfig,
-    out: &mut Vec<SymbolHit>,
+    hits: &mut CommitHits,
 ) {
     let Some(analyzer) = registry.for_path(path) else {
         return;
@@ -277,8 +319,15 @@ fn collect_hits(
     let Some(content) = git_history::read_blob_from_tree(repo, tree, path) else {
         return;
     };
-    let Ok(symbols) = analyzer.extract_symbols(path, &content) else {
-        return;
+    // A parse failure is real feedback: the file changed and an analyzer claims
+    // its extension, but its contents at this revision could not be parsed, so
+    // its changes are only counted at the file level.
+    let symbols = match analyzer.extract_symbols(path, &content) {
+        Ok(symbols) => symbols,
+        Err(_) => {
+            hits.parse_failures.push(path.to_string());
+            return;
+        }
     };
 
     let changed: HashSet<u32> = changed_lines.iter().copied().collect();
@@ -318,7 +367,7 @@ fn collect_hits(
     }
 
     for (name, (start_line, end_line, depth)) in touched {
-        out.push(SymbolHit {
+        hits.symbols.push(SymbolHit {
             path: path.to_string(),
             name,
             start_line,
@@ -428,6 +477,102 @@ mod tests {
         }
     }
 
+    fn hit(path: &str, name: &str, start: u32, end: u32, depth: u32) -> SymbolHit {
+        SymbolHit {
+            path: path.to_string(),
+            name: name.to_string(),
+            start_line: start,
+            end_line: end,
+            depth,
+        }
+    }
+
+    fn outcome(
+        time: i64,
+        seq: usize,
+        files: &[&str],
+        symbols: Vec<SymbolHit>,
+        parse_failures: &[&str],
+    ) -> Option<CommitOutcome> {
+        Some(CommitOutcome {
+            time,
+            seq,
+            files: files.iter().map(|s| s.to_string()).collect(),
+            symbols,
+            parse_failures: parse_failures.iter().map(|s| s.to_string()).collect(),
+        })
+    }
+
+    #[test]
+    fn reduce_counts_files_and_total() {
+        let outcomes = vec![
+            outcome(10, 0, &["a.go", "b.go"], vec![], &[]),
+            outcome(20, 1, &["a.go", "README.md"], vec![], &[]),
+        ];
+        let result = reduce_outcomes(outcomes, None, false);
+        assert_eq!(result.commit_count, 2);
+        // Three distinct files touched across the two commits.
+        assert_eq!(result.total_files, 3);
+        // `a.go` changed in both commits and leads the leaderboard.
+        assert_eq!(result.files[0].path, "a.go");
+        assert_eq!(result.files[0].changes, 2);
+    }
+
+    #[test]
+    fn reduce_dedups_and_sorts_parse_failures() {
+        // The same file fails to parse in two commits, plus another file once.
+        let outcomes = vec![
+            outcome(10, 0, &["z.go", "a.ts"], vec![], &["z.go"]),
+            outcome(20, 1, &["z.go"], vec![], &["z.go", "a.ts"]),
+        ];
+        let result = reduce_outcomes(outcomes, None, false);
+        // Distinct failing paths, sorted.
+        assert_eq!(result.parse_failures, vec!["a.ts", "z.go"]);
+    }
+
+    #[test]
+    fn reduce_has_no_parse_failures_when_all_parse() {
+        let outcomes = vec![outcome(
+            10,
+            0,
+            &["a.go"],
+            vec![hit("a.go", "f", 1, 3, 1)],
+            &[],
+        )];
+        let result = reduce_outcomes(outcomes, None, false);
+        assert!(result.parse_failures.is_empty());
+    }
+
+    #[test]
+    fn reduce_total_files_ignores_top_truncation() {
+        let outcomes = vec![outcome(10, 0, &["a", "b", "c"], vec![], &[])];
+        let result = reduce_outcomes(outcomes, Some(1), false);
+        // The leaderboard is capped at 1 row, but total_files still counts all 3.
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.total_files, 3);
+    }
+
+    #[test]
+    fn reduce_symbol_line_range_tracks_latest_commit() {
+        // The same symbol is credited in two commits at different line ranges;
+        // the newer commit (higher time) wins the reported range.
+        let older = outcome(10, 1, &["a.go"], vec![hit("a.go", "f", 5, 9, 1)], &[]);
+        let newer = outcome(20, 0, &["a.go"], vec![hit("a.go", "f", 1, 4, 1)], &[]);
+        // Feed them out of chronological order to prove ordering is by time.
+        let result = reduce_outcomes(vec![older, newer], None, false);
+        let f = result.symbols.iter().find(|s| s.symbol == "f").unwrap();
+        assert_eq!(f.changes, 2);
+        assert_eq!((f.start_line, f.end_line), (1, 4));
+    }
+
+    #[test]
+    fn reduce_skips_none_outcomes() {
+        let outcomes = vec![None, outcome(10, 0, &["a.go"], vec![], &[]), None];
+        let result = reduce_outcomes(outcomes, None, false);
+        assert_eq!(result.commit_count, 1);
+        assert_eq!(result.total_files, 1);
+    }
+
     #[test]
     fn innermost_prefers_deepest_then_smallest() {
         let symbols = vec![
@@ -445,5 +590,189 @@ mod tests {
         // max_depth clamps attribution to the deepest *kept* ancestor.
         assert_eq!(name(25, Some(2)), Some("inner"));
         assert_eq!(name(25, Some(1)), Some("outer"));
+    }
+
+    // --- End-to-end tests over a real (temporary) git repository. -----------
+    //
+    // These drive the whole pipeline — history walk, per-commit diff, blob read,
+    // language parse, and merge — so the parse-failure reporting is exercised the
+    // way a real run hits it, not just the isolated `reduce_outcomes` unit.
+
+    use git2::{Signature, Time};
+    use std::path::{Path, PathBuf};
+
+    /// A throwaway git repository under the system temp dir. Each commit writes
+    /// the given files into the work tree, stages them, and commits against the
+    /// previous tip with a deterministic, strictly increasing timestamp. The
+    /// directory is removed on drop.
+    struct TempRepo {
+        dir: PathBuf,
+        repo: Repository,
+        seq: i64,
+    }
+
+    impl TempRepo {
+        fn new(name: &str) -> Self {
+            // Unique per (process, test) so parallel tests don't collide; cleaned
+            // first in case a previous run left it behind.
+            let dir =
+                std::env::temp_dir().join(format!("hotcarpet-it-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let repo = Repository::init(&dir).unwrap();
+            Self { dir, repo, seq: 0 }
+        }
+
+        fn commit(&mut self, message: &str, files: &[(&str, &str)]) {
+            for (name, content) in files {
+                std::fs::write(self.dir.join(name), content).unwrap();
+            }
+            let mut index = self.repo.index().unwrap();
+            for (name, _) in files {
+                index.add_path(Path::new(name)).unwrap();
+            }
+            index.write().unwrap();
+            let tree = self.repo.find_tree(index.write_tree().unwrap()).unwrap();
+
+            // Fixed base time plus the commit sequence keeps history ordering
+            // deterministic without depending on the wall clock.
+            let sig = Signature::new(
+                "Tester",
+                "tester@example.com",
+                &Time::new(1_600_000_000 + self.seq * 100, 0),
+            )
+            .unwrap();
+            self.seq += 1;
+
+            let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+            let parents: Vec<&git2::Commit> = parent.as_ref().into_iter().collect();
+            self.repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+                .unwrap();
+        }
+
+        fn path(&self) -> String {
+            self.dir.to_str().unwrap().to_string()
+        }
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn default_config(repo: String) -> AnalyzeConfig {
+        AnalyzeConfig {
+            repo,
+            since: None,
+            until: None,
+            since_commit: None,
+            max_commits: None,
+            globset: None,
+            exclude: None,
+            dig: true,
+            max_depth: None,
+            attribution: Attribution::Innermost,
+            top: None,
+        }
+    }
+
+    #[test]
+    fn analyze_reports_parse_failure_across_history() {
+        let mut repo = TempRepo::new("parse-failure");
+        // c1: valid Go plus a non-analyzable file.
+        repo.commit(
+            "c1",
+            &[
+                ("a.go", "package main\nfunc a() int { return 1 }\n"),
+                ("README.md", "# hi\n"),
+            ],
+        );
+        // c2: a.go is broken at this revision — it must be reported as a failure.
+        repo.commit(
+            "c2",
+            &[("a.go", "package main\nfunc a( int { return 1 }\n")],
+        );
+        // c3: a.go is fixed again and a new valid file appears.
+        repo.commit(
+            "c3",
+            &[
+                ("a.go", "package main\nfunc a() int { return 2 }\n"),
+                ("b.go", "package main\nfunc b() {}\n"),
+            ],
+        );
+
+        let registry = AnalyzerRegistry::with_builtins();
+        let result = analyze(&default_config(repo.path()), &registry).unwrap();
+
+        assert_eq!(result.commit_count, 3);
+        // a.go, README.md, b.go — README counts but is never parsed.
+        assert_eq!(result.total_files, 3);
+        // Only a.go failed to parse (at c2), reported once despite three touches.
+        assert_eq!(result.parse_failures, vec!["a.go".to_string()]);
+
+        let changes = |path: &str| {
+            result
+                .files
+                .iter()
+                .find(|f| f.path == path)
+                .map(|f| f.changes)
+        };
+        assert_eq!(changes("a.go"), Some(3));
+        assert_eq!(changes("b.go"), Some(1));
+
+        // Dig-down still credits `a` for the two commits it parsed (c1 and c3),
+        // and `b` for its single commit; the broken c2 contributes no symbol.
+        let sym_changes = |name: &str| {
+            result
+                .symbols
+                .iter()
+                .find(|s| s.symbol == name)
+                .map(|s| s.changes)
+        };
+        assert_eq!(sym_changes("a"), Some(2));
+        assert_eq!(sym_changes("b"), Some(1));
+    }
+
+    #[test]
+    fn analyze_clean_repo_reports_no_parse_failures() {
+        let mut repo = TempRepo::new("clean");
+        repo.commit("c1", &[("main.go", "package main\nfunc main() {}\n")]);
+        repo.commit(
+            "c2",
+            &[("main.go", "package main\nfunc main() { _ = 1 }\n")],
+        );
+
+        let registry = AnalyzerRegistry::with_builtins();
+        let result = analyze(&default_config(repo.path()), &registry).unwrap();
+
+        assert_eq!(result.total_files, 1);
+        assert!(result.parse_failures.is_empty());
+        assert_eq!(
+            result
+                .symbols
+                .iter()
+                .find(|s| s.symbol == "main")
+                .map(|s| s.changes),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn analyze_without_dig_reports_no_parse_failures() {
+        // With dig-down off, no file is parsed, so even a broken revision yields
+        // no parse failures — only the file leaderboard is produced.
+        let mut repo = TempRepo::new("no-dig");
+        repo.commit("c1", &[("a.go", "package main\nfunc a( int {\n")]);
+
+        let registry = AnalyzerRegistry::with_builtins();
+        let mut config = default_config(repo.path());
+        config.dig = false;
+        let result = analyze(&config, &registry).unwrap();
+
+        assert_eq!(result.total_files, 1);
+        assert!(result.parse_failures.is_empty());
+        assert!(result.symbols.is_empty());
     }
 }
