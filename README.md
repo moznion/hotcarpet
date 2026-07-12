@@ -118,6 +118,40 @@ directory you run hotcarpet from — so `hotcarpet 'src/**/*.ts'` always means
 `src/` under the repo root. A leading `./` is stripped automatically, and globs
 should be quoted so your shell doesn't expand them first.
 
+## GitHub Action
+
+A companion GitHub Action, [**moznion/hotcarpet-action**](https://github.com/moznion/hotcarpet-action),
+surfaces a repository's hot spots straight in a workflow's **job summary**. It
+downloads the released binary for the runner's platform, runs hotcarpet, and
+appends the `--table` report to `$GITHUB_STEP_SUMMARY`.
+
+```yaml
+name: Hot spots
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hotspots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # hotcarpet needs the full commit history
+
+      - uses: moznion/hotcarpet-action@v1
+        with:
+          globs: "src/**/*.rs"
+          args: "--top 15"
+```
+
+See the [hotcarpet-action README](https://github.com/moznion/hotcarpet-action)
+for the full list of inputs and outputs. This repository dogfoods the action in
+[`.github/workflows/hotspots.yml`](.github/workflows/hotspots.yml).
+
 ## How it works
 
 1. `git_history` walks commits from `HEAD`, diffing each against its first parent.
