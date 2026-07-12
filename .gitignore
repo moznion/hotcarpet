@@ -1,1 +1,4 @@
 /target
+
+# Coverage reports produced by cargo-llvm-cov / consumed by octocov.
+/coverage.lcov
