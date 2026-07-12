@@ -12,6 +12,7 @@ use anyhow::Result;
 
 use crate::config::Config;
 
+mod rust;
 mod typescript;
 
 /// A named source symbol (function or method) and the 1-based, inclusive line
@@ -72,6 +73,7 @@ impl AnalyzerRegistry {
             by_ext: HashMap::new(),
         };
         registry.register(Box::new(typescript::TypeScriptAnalyzer));
+        registry.register(Box::new(rust::RustAnalyzer));
         registry
     }
 
@@ -230,6 +232,12 @@ mod tests {
     }
 
     #[test]
+    fn builtin_extensions_route_to_rust() {
+        let registry = AnalyzerRegistry::with_builtins();
+        assert_eq!(analyzer_name(&registry, "a.rs"), Some("Rust"));
+    }
+
+    #[test]
     fn extra_extensions_add_to_defaults() {
         let mut registry = AnalyzerRegistry::with_builtins();
         registry.apply_config(&config_with(
@@ -265,14 +273,14 @@ mod tests {
     fn unknown_analyzer_is_ignored() {
         let mut registry = AnalyzerRegistry::with_builtins();
         registry.apply_config(&config_with(
-            "rust",
+            "python",
             AnalyzerConfig {
-                extensions: Some(vec!["rs".to_string()]),
+                extensions: Some(vec!["py".to_string()]),
                 extra_extensions: vec![],
             },
         ));
-        // No analyzer named "rust"; the entry is skipped, defaults unchanged.
-        assert_eq!(analyzer_name(&registry, "a.rs"), None);
+        // No analyzer named "python"; the entry is skipped, defaults unchanged.
+        assert_eq!(analyzer_name(&registry, "a.py"), None);
         assert_eq!(analyzer_name(&registry, "a.ts"), Some("TypeScript"));
     }
 }
