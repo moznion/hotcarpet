@@ -10,12 +10,12 @@ clap = { version = "4.6.1", features = ["derive"] }
 comfy-table = "7.2.2"
 git2 = "0.21.0"
 globset = "0.4.18"
-oxc_allocator = "0.136"
-oxc_ast = "0.136"
-oxc_ast_visit = "0.136"
-oxc_parser = "0.136"
-oxc_span = "0.136"
-oxc_syntax = "0.136"
+oxc_allocator = "0.139"
+oxc_ast = "0.139"
+oxc_ast_visit = "0.139"
+oxc_parser = "0.139"
+oxc_span = "0.139"
+oxc_syntax = "0.139"
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
