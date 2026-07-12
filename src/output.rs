@@ -1,5 +1,7 @@
 //! Renders analysis results as JSON (default) or human-readable tables.
 
+use std::io::IsTerminal;
+
 use chrono::DateTime;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, CellAlignment, Table};
@@ -144,7 +146,7 @@ fn right(value: impl ToString) -> Cell {
 /// Emit a warning (to stderr) listing the files dig-down could not parse. Their
 /// changes still count toward the file leaderboard, just not per-function.
 fn warn_parse_failures(result: &AnalysisResult) {
-    eprintln!("{}", parse_failure_message(result));
+    warn(&parse_failure_message(result));
 }
 
 /// Build the parse-failure warning: a one-line summary followed by one indented
@@ -165,15 +167,38 @@ fn parse_failure_message(result: &AnalysisResult) -> String {
 /// Emit a hint (to stderr) explaining why the leaderboard came out empty.
 fn warn_empty(result: &AnalysisResult) {
     if result.commit_count == 0 {
-        eprintln!("warning: no commits matched the selected time range.");
+        warn("warning: no commits matched the selected time range.");
     } else if result.glob_filtered {
-        eprintln!(
+        warn(&format!(
             "warning: analyzed {} commit(s) but no changed file matched the given glob(s).\n\
              hint: globs are matched against repo-root-relative paths (e.g. 'src/**/*.ts'); \
              quote them and drop any leading './'.",
             result.commit_count,
-        );
+        ));
     }
+}
+
+/// Print a diagnostic to stderr, in yellow when stderr is a color-capable
+/// terminal.
+fn warn(msg: &str) {
+    eprintln!("{}", colorize_yellow(msg, stderr_supports_color()));
+}
+
+/// Wrap `msg` in the ANSI yellow color when `enabled`, otherwise return it
+/// unchanged. A single color pair spans the whole (possibly multi-line) message.
+fn colorize_yellow(msg: &str, enabled: bool) -> String {
+    if enabled {
+        format!("\x1b[33m{msg}\x1b[0m")
+    } else {
+        msg.to_string()
+    }
+}
+
+/// Whether stderr should be colorized: it is a terminal and `NO_COLOR` is unset
+/// or empty (per <https://no-color.org>).
+fn stderr_supports_color() -> bool {
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    !no_color && std::io::stderr().is_terminal()
 }
 
 /// Format a Unix timestamp as a UTC calendar date.
@@ -206,6 +231,12 @@ mod tests {
         assert_eq!(json["parse_failures"]["count"], 2);
         assert_eq!(json["parse_failures"]["files"][0], "a.go");
         assert_eq!(json["parse_failures"]["files"][1], "b.ts");
+    }
+
+    #[test]
+    fn colorize_wraps_only_when_enabled() {
+        assert_eq!(colorize_yellow("hi", true), "\x1b[33mhi\x1b[0m");
+        assert_eq!(colorize_yellow("hi", false), "hi");
     }
 
     #[test]
