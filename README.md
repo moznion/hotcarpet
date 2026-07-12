@@ -55,6 +55,11 @@ hotcarpet --no-dig
   [tree-sitter](https://tree-sitter.github.io)) ship in the box. Each can be
   enabled/disabled and have its file extensions configured per language (see
   [Configuration](#configuration)).
+- **Parse-failure reporting** — every run reports the total number of analyzed
+  files and, when dig-down can't parse a file at some revision, how many files
+  failed and which ones (their changes still count toward the file leaderboard,
+  just not per-function). In JSON this is the `total_files` / `parse_failures`
+  fields; with `--table` it is printed as a warning on stderr, outside the tables.
 - **JSON by default** — machine-readable output for piping into `jq` etc.; pass
   `--table` for human-readable tables.
 
@@ -126,7 +131,10 @@ should be quoted so your shell doesn't expand them first.
    at most once per commit). Pass `--no-dig` to skip this.
 3. `output` prints the rankings as JSON (default) or as tables (`--table`).
    Diagnostics such as "no file matched the glob" go to stderr, keeping stdout
-   valid JSON.
+   valid JSON. A file whose analyzer fails to parse a given revision is recorded
+   as a parse failure: it still contributes to the file leaderboard, but not to
+   the function leaderboard for that commit. The run reports `total_files` and
+   the `parse_failures` list (in JSON), or a stderr warning under `--table`.
 
 ## Configuration
 
