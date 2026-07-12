@@ -12,6 +12,7 @@ use anyhow::Result;
 
 use crate::config::Config;
 
+mod golang;
 mod rust;
 mod typescript;
 
@@ -77,6 +78,7 @@ impl AnalyzerRegistry {
         };
         registry.register(Box::new(typescript::TypeScriptAnalyzer));
         registry.register(Box::new(rust::RustAnalyzer));
+        registry.register(Box::new(golang::GoAnalyzer));
         registry
     }
 
@@ -240,6 +242,12 @@ mod tests {
     fn builtin_extensions_route_to_rust() {
         let registry = AnalyzerRegistry::with_builtins();
         assert_eq!(analyzer_name(&registry, "a.rs"), Some("Rust"));
+    }
+
+    #[test]
+    fn builtin_extensions_route_to_go() {
+        let registry = AnalyzerRegistry::with_builtins();
+        assert_eq!(analyzer_name(&registry, "a.go"), Some("Go"));
     }
 
     #[test]
