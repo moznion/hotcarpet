@@ -1,0 +1,36 @@
+name: Hot spots
+
+# Dogfoods hotcarpet on this repository: every pull request (and on demand) it
+# ranks the hottest Rust files/functions and prints the report to the run's job
+# summary. See the "GitHub Action" section of the README for reuse in your own
+# repository.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Only read access is needed; results go to the job summary, not a comment.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: hotspots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hotspots:
+    name: Report codebase hot spots
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # hotcarpet walks the full commit history
+
+      - name: hotcarpet
+        uses: moznion/hotcarpet-action@v1 # pin to a tag or commit SHA
+        with:
+          globs: "src/**/*.rs"
+          args: "--top 15"
