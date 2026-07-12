@@ -1,9 +1,9 @@
 //! User configuration loaded from a `.hotcarpet.toml` file.
 //!
-//! Today the only thing it controls is how file extensions map to the built-in
-//! language analyzers: an analyzer's default extension list can be replaced
-//! wholesale (`extensions`) and/or extended (`extra_extensions`). See
-//! [`crate::analyzer::AnalyzerRegistry::apply_config`].
+//! Today the only thing it controls is the per-language dig-down: whether an
+//! analyzer runs at all (`enabled`) and how file extensions map to it — an
+//! analyzer's default extension list can be replaced wholesale (`extensions`).
+//! See [`crate::analyzer::AnalyzerRegistry::apply_config`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,12 +28,13 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnalyzerConfig {
+    /// Whether dig-down runs for this language. When omitted, the analyzer is
+    /// enabled. Setting it to `false` stops hotcarpet from parsing this
+    /// language's files, so they contribute to the file leaderboard only.
+    pub enabled: Option<bool>,
     /// Replace the analyzer's built-in extension list entirely. When omitted,
     /// the built-in list is kept.
     pub extensions: Option<Vec<String>>,
-    /// Extensions to add on top of the (built-in or replaced) list.
-    #[serde(default)]
-    pub extra_extensions: Vec<String>,
 }
 
 impl Config {
@@ -86,7 +87,6 @@ mod tests {
             r#"
             [analyzers.typescript]
             extensions = ["ts", "tsx"]
-            extra_extensions = ["vue"]
             "#,
         )
         .unwrap();
@@ -96,22 +96,47 @@ mod tests {
             ts.extensions.as_deref(),
             Some(&["ts".to_string(), "tsx".to_string()][..])
         );
-        assert_eq!(ts.extra_extensions, vec!["vue".to_string()]);
     }
 
     #[test]
-    fn extra_extensions_default_to_empty() {
+    fn parses_enabled_flag() {
         let config: Config = toml::from_str(
             r#"
-            [analyzers.typescript]
-            extra_extensions = ["vue"]
+            [analyzers.rust]
+            enabled = false
             "#,
         )
         .unwrap();
 
-        let ts = &config.analyzers["typescript"];
-        assert_eq!(ts.extensions, None);
-        assert_eq!(ts.extra_extensions, vec!["vue".to_string()]);
+        assert_eq!(config.analyzers["rust"].enabled, Some(false));
+    }
+
+    #[test]
+    fn enabled_defaults_to_none() {
+        let config: Config = toml::from_str(
+            r#"
+            [analyzers.typescript]
+            extensions = ["vue"]
+            "#,
+        )
+        .unwrap();
+
+        // Absent `enabled` is `None`, which the registry treats as enabled.
+        assert_eq!(config.analyzers["typescript"].enabled, None);
+    }
+
+    #[test]
+    fn extensions_default_to_none() {
+        let config: Config = toml::from_str(
+            r#"
+            [analyzers.typescript]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+
+        // Absent `extensions` is `None`, which keeps the built-in list.
+        assert_eq!(config.analyzers["typescript"].extensions, None);
     }
 
     #[test]
