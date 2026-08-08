@@ -24,3 +24,7 @@ syn = { version = "2.0", features = ["full", "visit", "printing"] }
 toml = "1.1.2"
 tree-sitter = "0.26"
 tree-sitter-go = "0.25"
+# Fork of the fwcd Kotlin grammar carrying extra parse fixes. It has no
+# crates.io release, so it is pinned by rev. Dependabot cannot update this pin.
+tree-sitter-kotlin = { git = "https://github.com/exoego/tree-sitter-kotlin", rev = "97ab2826bf686723ca7dcc34d55f758d9c41a59d" }
+tree-sitter-scala = "0.26.2"
