@@ -13,7 +13,10 @@ use anyhow::Result;
 use crate::config::Config;
 
 mod golang;
+mod kotlin;
 mod rust;
+mod scala;
+mod treesitter;
 mod typescript;
 
 /// A named source symbol (function or method) and the 1-based, inclusive line
@@ -79,6 +82,8 @@ impl AnalyzerRegistry {
         registry.register(Box::new(typescript::TypeScriptAnalyzer));
         registry.register(Box::new(rust::RustAnalyzer));
         registry.register(Box::new(golang::GoAnalyzer));
+        registry.register(Box::new(kotlin::KotlinAnalyzer));
+        registry.register(Box::new(scala::ScalaAnalyzer));
         registry
     }
 
@@ -248,6 +253,20 @@ mod tests {
     fn builtin_extensions_route_to_go() {
         let registry = AnalyzerRegistry::with_builtins();
         assert_eq!(analyzer_name(&registry, "a.go"), Some("Go"));
+    }
+
+    #[test]
+    fn builtin_extensions_route_to_kotlin() {
+        let registry = AnalyzerRegistry::with_builtins();
+        assert_eq!(analyzer_name(&registry, "a.kt"), Some("Kotlin"));
+        assert_eq!(analyzer_name(&registry, "build.gradle.kts"), Some("Kotlin"));
+    }
+
+    #[test]
+    fn builtin_extensions_route_to_scala() {
+        let registry = AnalyzerRegistry::with_builtins();
+        assert_eq!(analyzer_name(&registry, "a.scala"), Some("Scala"));
+        assert_eq!(analyzer_name(&registry, "a.sc"), Some("Scala"));
     }
 
     #[test]
