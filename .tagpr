@@ -12,10 +12,11 @@
 #   tagpr.vPrefix
 #       Flag whether or not v-prefix is added to semver when git tagging.
 #
-#   tagpr.command
-#       Command to change files just before release.
+#   tagpr.postVersionCommand
+#       Command to change files just after the version file has been bumped.
 #       Cargo.lock also records the crate version, so it is refreshed here to keep
 #       `cargo ... --locked` in CI passing on the release pull request.
+#       (tagpr.command runs before the bump, so it cannot be used for this.)
 #
 #   tagpr.release
 #       GitHub Release creation behavior after tagging [true, draft, false].
@@ -28,5 +29,5 @@
 	vPrefix = true
 	releaseBranch = main
 	versionFile = Cargo.toml
-	command = cargo update --workspace
+	postVersionCommand = cargo update --workspace
 	release = true
