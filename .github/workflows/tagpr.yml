@@ -1,33 +1,46 @@
-name: Release
+name: tagpr
 
+# Maintains a release pull request on main with Songmu/tagpr. Merging it tags
+# the release, creates the GitHub release, and then builds/uploads the binaries.
 on:
   push:
-    tags:
-      - "v*"
-
-permissions:
-  contents: write
-
-env:
-  CARGO_TERM_COLOR: always
+    branches: [main]
 
 jobs:
-  create-release:
-    name: Create release
+  tagpr:
+    name: tagpr
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the release branch, tags and create the release
+      pull-requests: write # to open/update the release pull request
+      issues: write # to create the version-bump labels
+    outputs:
+      tag: ${{ steps.tagpr.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Create GitHub release
-        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1.11.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      # Required by `tagpr.command` (cargo update) to refresh Cargo.lock.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
+      - name: tagpr
+        id: tagpr
+        uses: Songmu/tagpr@967f2ab22be958948fb5bd439bfa3d404dd9dee8 # v1.21.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Tags pushed with GITHUB_TOKEN do not trigger other workflows, so the binaries
+  # are built and uploaded here once tagpr has tagged a release.
   upload-assets:
     name: Upload assets (${{ matrix.target }})
-    needs: create-release
+    needs: tagpr
+    if: needs.tagpr.outputs.tag != ''
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # to upload the binaries to the release
+    env:
+      CARGO_TERM_COLOR: always
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +58,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tagpr.outputs.tag }}
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
@@ -57,4 +72,5 @@ jobs:
           include: README.md,LICENSE
           # Generate a SHA-256 checksum alongside each archive.
           checksum: sha256
+          ref: refs/tags/${{ needs.tagpr.outputs.tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
