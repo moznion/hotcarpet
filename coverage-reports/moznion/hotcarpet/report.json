@@ -1,7 +1,7 @@
 {
   "repository": "moznion/hotcarpet",
   "ref": "refs/heads/main",
-  "commit": "da9787011a2a469b21e5fa72e072a8295eedcafe",
+  "commit": "59327934de82e0b820e0124cb2a74938b0d11dc3",
   "base_ref": "refs/heads/main",
   "coverage": {
     "type": "loc",
@@ -9615,8 +9615,8 @@
             "type": "loc",
             "start_line": 432,
             "end_line": 432,
-            "count": 10,
-            "count_u64": 10
+            "count": 9,
+            "count_u64": 9
           },
           {
             "type": "loc",
@@ -13436,6 +13436,6 @@
       }
     ]
   },
-  "test_execution_time": 41000000000,
-  "timestamp": "2026-10-01T00:59:33.961555506Z"
+  "test_execution_time": 3000000000,
+  "timestamp": "2026-10-01T01:00:51.77004946Z"
 }
