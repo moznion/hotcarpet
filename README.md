@@ -51,7 +51,7 @@ hotcarpet --no-dig
   or method it modified, with its line range. Disable with `--no-dig`.
 - **Language plugins** — dig-down is powered by pluggable per-language analyzers.
   TypeScript / JavaScript (parsed with [oxc](https://oxc.rs)), Rust (parsed with
-  [syn](https://docs.rs/syn)), and Go (parsed with
+  [syn](https://docs.rs/syn)), and Go, Kotlin, and Scala (all parsed with
   [tree-sitter](https://tree-sitter.github.io)) ship in the box. Each can be
   enabled/disabled and have its file extensions configured per language (see
   [Configuration](#configuration)).
@@ -190,6 +190,10 @@ extensions = ["ts", "tsx", "vue", "astro"]
 enabled = false
 ```
 
+The built-in analyzers and their default extensions are `typescript` (`ts`,
+`tsx`, `mts`, `cts`, `js`, `jsx`, `mjs`, `cjs`), `rust` (`rs`), `go` (`go`),
+`kotlin` (`kt`, `kts`), and `scala` (`scala`, `sc`).
+
 `enabled` defaults to `true`; set it to `false` to skip a language while still
 digging into the others (unlike `--no-dig`, which disables dig-down globally).
 `extensions` replaces the analyzer's built-in extension list wholesale; omit it
@@ -202,8 +206,8 @@ naming an analyzer that does not exist is reported to stderr and skipped.
 Implement `analyzer::LanguageAnalyzer` (report each function/method's name and
 1-based line range from a source string) and register it in
 `AnalyzerRegistry::with_builtins`. See `analyzer/typescript.rs` (oxc),
-`analyzer/rust.rs` (syn), or `analyzer/golang.rs` (tree-sitter) for reference
-implementations. The analyzer's `name()`
+`analyzer/rust.rs` (syn), or `analyzer/golang.rs` (tree-sitter, built on the
+shared scaffolding in `analyzer/treesitter.rs`) for reference implementations. The analyzer's `name()`
 doubles as its config key, and its `extensions()` becomes the default mapping
 users can override (see
 [Configuration](#configuration)).

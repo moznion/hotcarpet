@@ -12,9 +12,10 @@
 //! closures it contains — like a class in the TypeScript analyzer — but does not
 //! increase nesting depth; only stepping into a function body does.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tree_sitter::Node;
 
+use super::treesitter::{Visitor, Walk, parse_strict};
 use super::{LanguageAnalyzer, Symbol};
 
 pub struct GoAnalyzer;
@@ -29,88 +30,30 @@ impl LanguageAnalyzer for GoAnalyzer {
     }
 
     fn extract_symbols(&self, _path: &str, source: &str) -> Result<Vec<Symbol>> {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_go::LANGUAGE.into())
-            .map_err(|e| anyhow!("failed to load Go grammar: {e}"))?;
-        let tree = parser
-            .parse(source, None)
-            .ok_or_else(|| anyhow!("failed to parse Go source"))?;
-        let root = tree.root_node();
-        // tree-sitter is error-tolerant and always returns a tree. Match the
-        // other analyzers, which reject syntactically broken input so the engine
-        // falls back to file-level counting rather than trusting a partial parse.
-        if root.has_error() {
-            return Err(anyhow!("Go source has syntax errors"));
-        }
-
+        let tree = parse_strict(&tree_sitter_go::LANGUAGE.into(), "Go", source)?;
         let mut collector = SymbolCollector {
-            src: source,
-            symbols: Vec::new(),
-            scope_stack: Vec::new(),
-            name_hint: None,
-            depth: 0,
+            walk: Walk::new(source),
         };
-        collector.visit(root);
-        Ok(collector.symbols)
+        collector.visit(tree.root_node());
+        Ok(collector.walk.symbols)
     }
 }
 
 /// Syntax-tree visitor that accumulates function / method / closure symbols.
+/// The scope stack carries the receiver types of the methods we are inside; the
+/// name hint is set when entering a binding such as `f := ...`, a struct field,
+/// or a call argument.
 struct SymbolCollector<'a> {
-    src: &'a str,
-    symbols: Vec<Symbol>,
-    /// Receiver types of the methods we are currently inside, outermost first.
-    /// Used to qualify recorded names.
-    scope_stack: Vec<String>,
-    /// Name to attach to the next function literal we descend into (set when
-    /// entering a binding such as `f := ...`, a struct field, or a call argument).
-    name_hint: Option<String>,
-    /// Number of enclosing function bodies we are currently inside.
-    depth: u32,
+    walk: Walk<'a>,
 }
 
-impl<'a> SymbolCollector<'a> {
-    fn text(&self, node: Node) -> String {
-        self.src[node.byte_range()].to_string()
+impl<'a> Visitor<'a> for SymbolCollector<'a> {
+    fn walk(&self) -> &Walk<'a> {
+        &self.walk
     }
 
-    fn record(&mut self, name: String, node: Node) {
-        let qualified = if self.scope_stack.is_empty() {
-            name
-        } else {
-            format!("{}.{}", self.scope_stack.join("."), name)
-        };
-        // tree-sitter rows are 0-based; the range is inclusive of the line that
-        // holds the closing brace.
-        let start_line = node.start_position().row as u32 + 1;
-        let end_line = node.end_position().row as u32 + 1;
-        self.symbols.push(Symbol {
-            name: qualified,
-            start_line,
-            end_line,
-            // The function being recorded sits one level below its enclosers.
-            depth: self.depth + 1,
-        });
-    }
-
-    /// Record `name` for `node`, then walk its children with the depth bumped by
-    /// one. The name hint is cleared for the body so it cannot leak onto a nested
-    /// closure, and restored afterwards.
-    fn record_and_descend(&mut self, name: String, node: Node<'a>) {
-        self.record(name, node);
-        let saved = self.name_hint.take();
-        self.depth += 1;
-        self.visit_children(node);
-        self.depth -= 1;
-        self.name_hint = saved;
-    }
-
-    fn visit_children(&mut self, node: Node<'a>) {
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            self.visit(child);
-        }
+    fn walk_mut(&mut self) -> &mut Walk<'a> {
+        &mut self.walk
     }
 
     fn visit(&mut self, node: Node<'a>) {
@@ -131,19 +74,15 @@ impl<'a> SymbolCollector<'a> {
                 // Push the receiver type so the method — and any closures inside
                 // it — are qualified by it. Like a class, it adds no depth.
                 if let Some(recv) = &recv {
-                    self.scope_stack.push(recv.clone());
+                    self.walk.scope_stack.push(recv.clone());
                 }
                 self.record_and_descend(name, node);
                 if recv.is_some() {
-                    self.scope_stack.pop();
+                    self.walk.scope_stack.pop();
                 }
             }
             "func_literal" => {
-                let name = self
-                    .name_hint
-                    .take()
-                    .unwrap_or_else(|| "<closure>".to_string());
-                self.record_and_descend(name, node);
+                self.record_hinted(node, "<closure>");
             }
             // `f := func() {}` / `a, b := 1, func() {}` / `h = func() {}` — pair
             // each right-hand value with the identifier it is assigned to.
@@ -170,10 +109,9 @@ impl<'a> SymbolCollector<'a> {
                     let callee = node
                         .child_by_field_name("function")
                         .and_then(|f| self.callee_name(f));
-                    let saved = self.name_hint.take();
-                    self.name_hint = callee.map(|c| format!("{c}()"));
-                    self.visit_children(args);
-                    self.name_hint = saved;
+                    self.with_hint(callee.map(|c| format!("{c}()")), |s| {
+                        s.visit_children(args);
+                    });
                 }
             }
             // Struct-literal field holding a function: `T{ handler: func() {} }`.
@@ -182,16 +120,15 @@ impl<'a> SymbolCollector<'a> {
                     .child_by_field_name("key")
                     .and_then(|k| self.element_ident(k));
                 if let Some(value) = node.child_by_field_name("value") {
-                    let saved = self.name_hint.take();
-                    self.name_hint = key;
-                    self.visit(value);
-                    self.name_hint = saved;
+                    self.with_hint(key, |s| s.visit(value));
                 }
             }
             _ => self.visit_children(node),
         }
     }
+}
 
+impl<'a> SymbolCollector<'a> {
     /// Walk an assignment/short-var declaration, hinting each right-hand value
     /// with the name it is bound to.
     fn visit_bindings(&mut self, left: Option<Node<'a>>, right: Option<Node<'a>>) {
@@ -209,10 +146,7 @@ impl<'a> SymbolCollector<'a> {
                 .get(i)
                 .filter(|n| n.kind() == "identifier")
                 .map(|n| self.text(*n));
-            let saved = self.name_hint.take();
-            self.name_hint = hint;
-            self.visit(value);
-            self.name_hint = saved;
+            self.with_hint(hint, |s| s.visit(value));
         }
     }
 
