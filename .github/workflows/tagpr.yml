@@ -20,7 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Required by `tagpr.command` (cargo update) to refresh Cargo.lock.
+      # Required by `tagpr.postVersionCommand` (cargo update) to refresh Cargo.lock.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
