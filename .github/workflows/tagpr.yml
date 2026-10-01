@@ -18,7 +18,7 @@ jobs:
       tag: ${{ steps.tagpr.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Required by `tagpr.command` (cargo update) to refresh Cargo.lock.
       - name: Install Rust toolchain
@@ -30,14 +30,47 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Tags pushed with GITHUB_TOKEN do not trigger other workflows, so the release
-  # workflow is called directly once tagpr has tagged a release.
-  release:
-    name: Release
+  # Tags pushed with GITHUB_TOKEN do not trigger other workflows, so the binaries
+  # are built and uploaded here once tagpr has tagged a release.
+  upload-assets:
+    name: Upload assets (${{ matrix.target }})
     needs: tagpr
     if: needs.tagpr.outputs.tag != ''
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write # to upload the binaries to the release
-    uses: ./.github/workflows/release.yml
-    with:
-      tag: ${{ needs.tagpr.outputs.tag }}
+    env:
+      CARGO_TERM_COLOR: always
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.tagpr.outputs.tag }}
+
+      - name: Build and upload binary
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
+        with:
+          bin: hotcarpet
+          target: ${{ matrix.target }}
+          # Archive name (extension is added automatically: .tar.gz on unix, .zip on windows).
+          archive: $bin-$tag-$target
+          # Attach extra files to the archive.
+          include: README.md,LICENSE
+          # Generate a SHA-256 checksum alongside each archive.
+          checksum: sha256
+          ref: refs/tags/${{ needs.tagpr.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
