@@ -1,9 +1,21 @@
 name: Release
 
+# Builds the binaries and uploads them to the GitHub release that tagpr has
+# created (see .github/workflows/tagpr.yml). It can also be run by hand to
+# (re-)upload the assets of an existing release.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.3.0)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,21 +24,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    name: Create release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Create GitHub release
-        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1.11.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
   upload-assets:
     name: Upload assets (${{ matrix.target }})
-    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -44,7 +43,9 @@ jobs:
             os: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
 
       - name: Build and upload binary
         uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
@@ -57,4 +58,5 @@ jobs:
           include: README.md,LICENSE
           # Generate a SHA-256 checksum alongside each archive.
           checksum: sha256
+          ref: refs/tags/${{ inputs.tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
