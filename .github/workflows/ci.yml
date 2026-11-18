@@ -32,7 +32,7 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview # llvm-tools-preview is required by cargo-llvm-cov
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
